@@ -71,14 +71,15 @@ cd cliproxyapi-installer
 The installer script supports multiple commands:
 
 ```bash
-./cliproxyapi-installer [COMMAND]
+./cliproxyapi-installer [COMMAND] [VERSION]
+./cliproxyapi-installer [COMMAND] --version VERSION
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `install` / `upgrade` | Install or upgrade CLIProxyAPI (default) |
+| `install` / `upgrade` | Install or upgrade CLIProxyAPI (default, supports optional version parameter) |
 | `status` | Show current installation status |
 | `auth` | Display authentication setup information |
 | `check-config` | Verify configuration and API keys |
@@ -92,6 +93,11 @@ The installer script supports multiple commands:
 ```bash
 # Install or upgrade to the latest version
 ./cliproxyapi-installer
+
+# Install a specific version (avoids calling latest release API)
+./cliproxyapi-installer 1.2.3
+./cliproxyapi-installer install 1.2.3
+./cliproxyapi-installer install --version 1.2.3
 
 # Check current installation status
 ./cliproxyapi-installer status

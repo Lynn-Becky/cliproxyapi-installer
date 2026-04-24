@@ -401,6 +401,15 @@ extract_release_info() {
     echo "${version}|${download_url}"
 }
 
+# Build release download URL directly from a specified version
+build_download_url_for_version() {
+    local version="$1"
+    local os_arch="$2"
+
+    local filename="CLIProxyAPI_${version}_${os_arch}.tar.gz"
+    echo "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${version}/${filename}"
+}
+
 # Check if CLIProxyAPI is already installed
 is_installed() {
     [[ -f "${INSTALL_DIR}/version.txt" ]]
@@ -657,7 +666,7 @@ download_file() {
     log_info "Downloading $(basename "$url")..."
     
     if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$output" "$url"
+        curl -fL -o "$output" "$url"
     else
         wget -O "$output" "$url"
     fi
@@ -730,6 +739,7 @@ make_executable() {
 
 # Main installation function
 install_cliproxyapi() {
+    local target_version="${1:-}"
     local current_version
     current_version=$(get_current_version)
     local is_upgrade=false
@@ -755,18 +765,27 @@ install_cliproxyapi() {
     local os_arch
     os_arch=$(detect_linux_arch)
     log_step "Detected platform: $os_arch"
-    
-    # Fetch release info
-    local release_info
-    release_info=$(fetch_release_info)
-    
-    # Extract version and download URL
-    local release_data
-    release_data=$(extract_release_info "$release_info" "$os_arch")
-    local version=$(echo "$release_data" | cut -d'|' -f1)
-    local download_url=$(echo "$release_data" | cut -d'|' -f2)
-    
-    log_step "Latest version: $version"
+
+    local version
+    local download_url
+    if [[ -n "$target_version" ]]; then
+        target_version="${target_version#v}"
+        version="$target_version"
+        download_url=$(build_download_url_for_version "$version" "$os_arch")
+        log_step "Using specified version: $version"
+    else
+        # Fetch release info
+        local release_info
+        release_info=$(fetch_release_info)
+
+        # Extract version and download URL
+        local release_data
+        release_data=$(extract_release_info "$release_info" "$os_arch")
+        version=$(echo "$release_data" | cut -d'|' -f1)
+        download_url=$(echo "$release_data" | cut -d'|' -f2)
+
+        log_step "Latest version: $version"
+    fi
     
     # Check if already up to date
     if [[ "$is_upgrade" == true && "$current_version" == "$version" ]]; then
@@ -955,9 +974,39 @@ trap cleanup EXIT
 
 # Main script logic
 main() {
-    case "${1:-install}" in
+    local command="${1:-install}"
+    local target_version=""
+
+    # Allow shorthand: ./cliproxyapi-installer 1.2.3
+    if [[ "$command" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        target_version="${command#v}"
+        command="install"
+    fi
+
+    # Allow: ./cliproxyapi-installer --version 1.2.3
+    if [[ "$command" == "--version" || "$command" == "-v" ]]; then
+        if [[ -z "${2:-}" ]]; then
+            log_error "Missing value for $command"
+            echo "Use '$SCRIPT_NAME --help' for usage information"
+            exit 1
+        fi
+        target_version="${2#v}"
+        command="install"
+    fi
+
+    case "$command" in
         "install"|"upgrade")
-            install_cliproxyapi
+            if [[ "${2:-}" == "--version" || "${2:-}" == "-v" ]]; then
+                if [[ -z "${3:-}" ]]; then
+                    log_error "Missing value for ${2}"
+                    echo "Use '$SCRIPT_NAME --help' for usage information"
+                    exit 1
+                fi
+                target_version="${3#v}"
+            elif [[ -n "${2:-}" && -z "$target_version" ]]; then
+                target_version="${2#v}"
+            fi
+            install_cliproxyapi "$target_version"
             ;;
         "status")
             show_status
@@ -1028,6 +1077,10 @@ main() {
 
 Usage: $SCRIPT_NAME [COMMAND] [OPTIONS]
 
+Install/Upgrade Options:
+    [VERSION]          Install/upgrade a specific version (e.g. 1.2.3 or v1.2.3)
+    --version, -v VER  Install/upgrade a specific version
+
 Commands:
   install, upgrade    Install or upgrade CLIProxyAPI (default)
   status             Show current installation status
@@ -1059,6 +1112,9 @@ Supported Platforms:
 
 Examples:
   $SCRIPT_NAME              # Install or upgrade
+    $SCRIPT_NAME 1.2.3        # Install specific version
+    $SCRIPT_NAME install 1.2.3
+    $SCRIPT_NAME install --version 1.2.3
   $SCRIPT_NAME status       # Show current status
   $SCRIPT_NAME auth         # Show authentication info
   $SCRIPT_NAME check-config # Check configuration
@@ -1068,7 +1124,7 @@ Examples:
 EOF
             ;;
         *)
-            log_error "Unknown command: $1"
+            log_error "Unknown command: $command"
             echo "Use '$SCRIPT_NAME --help' for usage information"
             exit 1
             ;;
