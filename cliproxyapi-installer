@@ -311,14 +311,16 @@ show_quick_start() {
     echo
 }
 
-# Detect Linux architecture
-detect_linux_arch() {
-    # Detect architecture
+# Get architecture candidate names (primary first, fallback after).
+# Release naming changed at v7.x: arm64 -> aarch64. Older releases (<=6.x)
+# still use arm64. We try the newer name first and fall back to the legacy one.
+get_arch_candidates() {
     case "$(uname -m)" in
         x86_64|amd64)
             echo "linux_amd64"
             ;;
         arm64|aarch64)
+            echo "linux_aarch64"
             echo "linux_arm64"
             ;;
         *)
@@ -326,6 +328,11 @@ detect_linux_arch() {
             exit 1
             ;;
     esac
+}
+
+# Detect Linux architecture (returns the primary candidate, used for display)
+detect_linux_arch() {
+    get_arch_candidates | head -n1
 }
 
 # Check if required tools are available
@@ -371,43 +378,69 @@ fetch_release_info() {
 # Extract version and download URL from release info
 extract_release_info() {
     local release_info="$1"
-    local os_arch="$2"
-    
+
     local version
     version=$(echo "$release_info" | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4 | sed 's/^v//')
-    
+
     if [[ -z "$version" ]]; then
         log_error "Failed to extract version from release info"
         exit 1
     fi
-    
-    local expected_filename="CLIProxyAPI_${version}_${os_arch}"
-    local download_url=""
-    
-    # Handle different file extensions
-    if [[ "$os_arch" == windows_* ]]; then
-        expected_filename="${expected_filename}.zip"
-    else
-        expected_filename="${expected_filename}.tar.gz"
-    fi
-    
-    download_url=$(echo "$release_info" | grep -o "\"browser_download_url\": *\"[^\"]*${expected_filename}[^\"]*\"" | cut -d'"' -f4)
-    
-    if [[ -z "$download_url" ]]; then
-        log_error "Failed to find download URL for ${expected_filename}"
-        exit 1
-    fi
-    
-    echo "${version}|${download_url}"
+
+    local candidates
+    candidates=$(get_arch_candidates)
+
+    # Try each architecture naming candidate until one matches an asset
+    while IFS= read -r os_arch; do
+        local expected_filename="CLIProxyAPI_${version}_${os_arch}"
+        if [[ "$os_arch" == windows_* ]]; then
+            expected_filename="${expected_filename}.zip"
+        else
+            expected_filename="${expected_filename}.tar.gz"
+        fi
+
+        local download_url
+        download_url=$(echo "$release_info" | grep -o "\"browser_download_url\": *\"[^\"]*${expected_filename}[^\"]*\"" | cut -d'"' -f4)
+
+        if [[ -n "$download_url" ]]; then
+            echo "${version}|${download_url}"
+            return 0
+        fi
+    done <<< "$candidates"
+
+    log_error "Failed to find a matching release asset for version ${version} on $(uname -m)"
+    exit 1
 }
 
-# Build release download URL directly from a specified version
+# Build release download URL directly from a specified version.
+# Probes each architecture-name candidate (newer naming first) and returns
+# the first URL that actually exists on GitHub.
 build_download_url_for_version() {
     local version="$1"
-    local os_arch="$2"
 
-    local filename="CLIProxyAPI_${version}_${os_arch}.tar.gz"
-    echo "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${version}/${filename}"
+    local candidates
+    candidates=$(get_arch_candidates)
+
+    while IFS= read -r os_arch; do
+        local filename="CLIProxyAPI_${version}_${os_arch}.tar.gz"
+        local url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${version}/${filename}"
+
+        # HEAD request to verify the asset exists before committing to it
+        if command -v curl >/dev/null 2>&1; then
+            if curl -fsLI -o /dev/null "$url" 2>/dev/null; then
+                echo "$url"
+                return 0
+            fi
+        else
+            if wget --spider -q "$url" 2>/dev/null; then
+                echo "$url"
+                return 0
+            fi
+        fi
+    done <<< "$candidates"
+
+    log_error "Could not find release asset for version $version on $(uname -m). Checked candidates: $(echo "$candidates" | tr '\n' ' ')"
+    exit 1
 }
 
 # Check if CLIProxyAPI is already installed
@@ -771,7 +804,7 @@ install_cliproxyapi() {
     if [[ -n "$target_version" ]]; then
         target_version="${target_version#v}"
         version="$target_version"
-        download_url=$(build_download_url_for_version "$version" "$os_arch")
+        download_url=$(build_download_url_for_version "$version")
         log_step "Using specified version: $version"
     else
         # Fetch release info
@@ -780,7 +813,7 @@ install_cliproxyapi() {
 
         # Extract version and download URL
         local release_data
-        release_data=$(extract_release_info "$release_info" "$os_arch")
+        release_data=$(extract_release_info "$release_info")
         version=$(echo "$release_data" | cut -d'|' -f1)
         download_url=$(echo "$release_data" | cut -d'|' -f2)
 
